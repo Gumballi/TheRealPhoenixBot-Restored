@@ -1,47 +1,73 @@
 import requests
 import urllib.parse
+from telegram import Bot, Update
+from telegram.ext import run_async
+from tg_bot import dispatcher
+from tg_bot.modules.disable import DisableAbleCommandHandler
 
-class Song:
+class SongFetcher:
     @staticmethod
-    def find_song(title: str, artist: str = "") -> str:
+    def find_lyrics(query: str) -> str:
         """
-        Fetches lyrics using a tokenless public API.
-        Maintains the exact function interface you need.
+        Queries the free public LRCLIB API to fetch plain lyrics without tokens.
         """
-        # Clean inputs
-        title_clean = title.strip()
-        artist_clean = artist.strip()
-        
-        # Method 1: Try LRCLIB (Highly reliable public lyrics database)
         try:
-            query = f"{title_clean} {artist_clean}".strip()
             url = f"https://lrclib.net/api/search?q={urllib.parse.quote(query)}"
-            response = requests.get(url, timeout=5)
+            # Emulate standard user agent to keep requests clean
+            headers = {"User-Agent": "TelegramLyricsBot/1.0 (@TheRealPhoenix)"}
+            response = requests.get(url, headers=headers, timeout=6)
             
             if response.status_code == 200:
                 data = response.json()
                 if data:
-                    # Look for plain lyrics or fall back to synced lyrics text
+                    # Snag the top search result match
                     track = data[0]
                     lyrics = track.get("plainLyrics") or track.get("syncedLyrics")
                     if lyrics:
-                        return lyrics.strip()
+                        # Prepend the title and artist metadata neatly to the text output
+                        meta = f"✨ {track.get('trackName', '')} — {track.get('artistName', '')} ✨\n\n"
+                        return meta + lyrics.strip()
         except Exception:
-            pass # Fall through to next method if this fails
+            pass
+        return ""
 
-        # Method 2: Fallback to Lyrics.ovh (Tokenless exact match)
-        if artist_clean:
-            try:
-                url = f"https://api.lyrics.ovh/v1/{urllib.parse.quote(artist_clean)}/{urllib.parse.quote(title_clean)}"
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    lyrics = response.json().get("lyrics", "")
-                    if lyrics:
-                        return lyrics.strip()
-            except Exception:
-                pass
+@run_async
+def lyrics(bot: Bot, update: Update, args):
+    msg = update.effective_message
+    query = " ".join(args)
+    
+    if not query:
+        msg.reply_text("You haven't specified which song to look for!")
+        return
 
-        return "Lyrics not found or API unavailable."
+    # Call our internal tokenless fetcher instead of tswift
+    lyrics_text = SongFetcher.find_lyrics(query)
+    
+    if not lyrics_text:
+        msg.reply_text("Song lyrics not found!")
+        return
 
-# lyrics = Song.find_song("Blinding Lights", "The Weeknd")
-# print(lyrics)
+    # Check Telegram message payload limitations
+    if len(lyrics_text) > 4090:
+        with open("lyrics.txt", 'w', encoding='utf-8') as f:
+            f.write(f"{lyrics_text}\n\n\nOwO UwU OmO")
+        with open("lyrics.txt", 'rb') as f:
+            msg.reply_document(
+                document=f,
+                caption="Message length exceeded max limit! Sending as a text file."
+            )
+    else:
+        msg.reply_text(lyrics_text)
+
+__help__ = """
+Want to get the lyrics of your favorite songs straight from the app? This module is perfect for that!
+
+*Available commands:*
+ - /lyrics <song>: returns the lyrics of that song.
+ You can either enter just the song name or both the artist and song name.
+"""
+
+__mod_name__ = "Lyrics"
+
+LYRICS_HANDLER = DisableAbleCommandHandler("lyrics", lyrics, pass_args=True)
+dispatcher.add_handler(LYRICS_HANDLER)
