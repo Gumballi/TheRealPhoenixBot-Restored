@@ -18,3 +18,4 @@ coffeehouse
 tswift
 pyrate-limiter>=2.8,<3.0
 loguru
+malclient-upgraded
