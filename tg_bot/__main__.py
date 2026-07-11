@@ -40,6 +40,8 @@ from telegram.utils.helpers import escape_markdown
 
 from tg_bot import dispatcher, updater, TOKEN, WEBHOOK, OWNER_ID, DONATION_LINK, CERT_PATH, PORT, URL, LOGGER, \
     ALLOW_EXCL
+# Import database session to safeguard against transaction lockups
+from tg_bot.modules.sql import SESSION
 # needed to dynamically load modules
 # NOTE: Module order is not guaranteed, specify that in the config file!
 from tg_bot.modules import ALL_MODULES
@@ -505,25 +507,34 @@ def process_update(self, update):
         return
 
     CHATS_CNT[update.effective_chat.id] = cnt
-    for group in self.groups:
-        try:
-            for handler in (x for x in self.handlers[group] if x.check_update(update)):
-                handler.handle_update(update, self)
-                break
-        except DispatcherHandlerStop:
-            self.logger.debug('Stopping further handlers due to DispatcherHandlerStop')
-            break
-        except TelegramError as te:
-            self.logger.warning('A TelegramError was raised while processing the Update')
+    
+    # Process updates inside a comprehensive try/finally sweep to handle dead database states
+    try:
+        for group in self.groups:
             try:
-                self.dispatch_error(update, te)
+                for handler in (x for x in self.handlers[group] if x.check_update(update)):
+                    handler.handle_update(update, self)
+                    break
             except DispatcherHandlerStop:
-                self.logger.debug('Error handler stopped further handlers')
+                self.logger.debug('Stopping further handlers due to DispatcherHandlerStop')
                 break
+            except TelegramError as te:
+                self.logger.warning('A TelegramError was raised while processing the Update')
+                try:
+                    self.dispatch_error(update, te)
+                except DispatcherHandlerStop:
+                    self.logger.debug('Error handler stopped further handlers')
+                    break
+                except Exception:
+                    self.logger.exception('An uncaught error was raised while handling the error')
             except Exception:
-                self.logger.exception('An uncaught error was raised while handling the error')
+                self.logger.exception('An uncaught error was raised while processing the update')
+    finally:
+        # Forces a database rollback if any module left a broken or uncommitted transaction state
+        try:
+            SESSION.rollback()
         except Exception:
-            self.logger.exception('An uncaught error was raised while processing the update')
+            pass
 
 
 if __name__ == '__main__':
