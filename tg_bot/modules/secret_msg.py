@@ -1,47 +1,53 @@
 import uuid
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler
+import re
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import CallbackContext, CallbackQueryHandler, InlineQueryHandler
 
 from tg_bot import dispatcher
 
-# Temporary in-memory database to store secret payloads
-# Structure: { secret_id: { "text": secret_text, "target_id": target_user_id, "sender_id": sender_user_id } }
+# Internal storage for live secrets
 SECRET_DB = {}
 
-def send_secret(update: Update, context: CallbackContext):
-    message = update.effective_message
-    chat = update.effective_chat
+def inline_secret_handler(update: Update, context: CallbackContext):
+    query_obj = update.inline_query
+    query_text = query_obj.query.strip()
+
+    if not query_text:
+        return
+
+    # Regex looks for: text context up until an '@' symbol at the end
+    # Match pattern example: "My dark secret @target_username"
+    match = re.search(r'(.*?)\s+@([A-Za-z0-9_]{5,32})$', query_text)
     
-    # Check if the user replied to someone
-    if not message.reply_to_message:
-        message.reply_text("Please reply to the user you want to send a secret message to.")
+    if not match:
+        # Show a helpful helper hint to the user while they are actively typing out their query
+        results = [
+            InlineQueryResultArticle(
+                id="hint",
+                title="Format Guide",
+                description="Type: <secret text> @username",
+                input_message_content=InputTextMessageContent(
+                    "Standard Usage: Type `@botname your text @target` directly inside the input line."
+                )
+            )
+        ]
+        query_obj.answer(results, cache_time=1)
         return
 
-    # Extract the secret message text (everything after /secret)
-    args = context.args
-    if not args:
-        message.reply_text("Usage: Reply to a user with `/secret <your hidden text>`")
-        return
-        
-    secret_text = " ".join(args)
-    target_user = message.reply_to_message.from_user
-    sender_user = message.from_user
+    secret_payload = match.group(1).strip()
+    target_username = match.group(2).strip().lower()
+    sender = query_obj.from_user
 
-    if target_user.id == sender_user.id:
-        message.reply_text("You can't send a secret message to yourself!")
-        return
-
-    # Generate a unique key for this secret instance
+    # Generate reference tracking identity keys
     secret_id = str(uuid.uuid4())[:8]
-
-    # Store the payload details
     SECRET_DB[secret_id] = {
-        "text": secret_text,
-        "target_id": target_user.id,
-        "sender_id": sender_user.id
+        "text": secret_payload,
+        "target_username": target_username,
+        "sender_id": sender.id,
+        "sender_name": sender.first_name
     }
 
-    # Build the interaction layout
+    # Prepare user interface buttons
     keyboard = [
         [
             InlineKeyboardButton(
@@ -52,57 +58,57 @@ def send_secret(update: Update, context: CallbackContext):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    # Inform the chat a secret message is waiting
-    text = (
-        f"🔒 *Secret Message For You!*\n\n"
-        f"👤 **From:** {sender_user.mention_markdown_v2()}\n"
-        f"🎯 **For:** {target_user.mention_markdown_v2()}\n\n"
-        f"_Only the intended recipient can read this_."
+    # Frame output representation layout
+    display_text = (
+        f"*A Secret Message Has Arrived!*\n\n"
+        f"**From:** {sender.mention_markdown_v2()}\n"
+        f"**For:** @{target_username.replace('_', '\\_')}\n\n"
+        f"_Only the matching target username can decrypt this capsule._"
     )
-    
-    chat.send_message(text=text, reply_markup=reply_markup, parse_mode="MarkdownV2")
-    
-    # Delete the triggering command to hide the text immediately from plain view
-    try:
-        message.delete()
-    except Exception:
-        # Fails silently if the bot isn't granted group admin deletion permissions
-        pass
+
+    results = [
+        InlineQueryResultArticle(
+            id=secret_id,
+            title=f"Send Secret to @{target_username}",
+            description=f"Message: {secret_payload[:30]}...",
+            input_message_content=InputTextMessageContent(
+                text=display_text, 
+                parse_mode="MarkdownV2"
+            ),
+            reply_markup=reply_markup
+        )
+    ]
+
+    query_obj.answer(results, cache_time=0, is_personal=True)
 
 
-def read_secret(update: Update, context: CallbackContext):
+def read_inline_secret(update: Update, context: CallbackContext):
     query = update.callback_query
-    user_id = query.from_user.id
+    current_user = query.from_user
     
-    # Extract the unique ID from callback_data (e.g., "secret_abc123" -> "abc123")
+    # Extract structural identifier token maps
     secret_id = query.data.split("_")[1]
 
-    # Handle expired data states
     if secret_id not in SECRET_DB:
-        query.answer(text="⚠️ Error: This secret message has expired or no longer exists.", show_alert=True)
+        query.answer(text="Error: This secret message has expired or no longer exists.", show_alert=True)
         return
 
-    secret_data = SECRET_DB[secret_id]
+    data = SECRET_DB[secret_id]
+    
+    current_username = (current_user.username or "").lower()
 
-    # Permission Validation Guard
-    if user_id != secret_data["target_id"]:
-        query.answer(text="🚫 Imposter alert! This secret message was not meant for you.", show_alert=True)
+    # Double validation check (Matches both direct unique Telegram numeric ID OR raw textual target string handle matching)
+    if current_username != data["target_username"]:
+        query.answer(
+            text=f"Access Denied! This secret envelope belongs exclusively to @{data['target_username']}.", 
+            show_alert=True
+        )
         return
 
-    # Deliver the secret safely via an inline alert box pop-up
-    query.answer(text=f"🔑 Secret:\n\n{secret_data['text']}", show_alert=True)
+    # Deliver target packet text cleanly via interactive alert notification container panels
+    query.answer(text=f"Decrypted Message:\n\n{data['text']}", show_alert=True)
 
 
-# Registration components mapped out cleanly for the loading engine
-__help__ = """
-*Secret Messages:*
- Send a hidden text snippet that can only be unlocked and read by a targeted group member.
- 
- • `/secret <text>`: Reply to a user's message to transmit a lockbox packet specifically to them.
-"""
-
-__mod_name__ = "Secret Message"
-
-# Wire the actions into your bot's dispatcher instance
-dispatcher.add_handler(CommandHandler("secret", send_secret, run_async=True))
-dispatcher.add_handler(CallbackQueryHandler(read_secret, pattern=r"^secret_", run_async=True))
+# Connect inline interaction mechanics to framework architecture distribution layers
+dispatcher.add_handler(InlineQueryHandler(inline_secret_handler, run_async=True))
+dispatcher.add_handler(CallbackQueryHandler(read_inline_secret, pattern=r"^secret_", run_async=True))
