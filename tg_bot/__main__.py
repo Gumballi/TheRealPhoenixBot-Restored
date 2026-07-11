@@ -8,13 +8,18 @@ collections.MutableMapping = collections.abc.MutableMapping
 collections.Sequence = collections.abc.Sequence
 collections.MutableSequence = collections.abc.MutableSequence
 
-# Force-feed MAL environment variables to bypass third-party init check
-if not os.environ.get("MAL_CLIENT_ID"):
-    os.environ["MAL_CLIENT_ID"] = "dummy_id_to_bypass_init_check"
-if not os.environ.get("MAL_ACCESS_TOKEN"):
-    os.environ["MAL_ACCESS_TOKEN"] = "dummy_token"
-if not os.environ.get("MAL_REFRESH_TOKEN"):
-    os.environ["MAL_REFRESH_TOKEN"] = "dummy_refresh"
+# Intercept and fix malclient-upgraded constructor compatibility
+import malclient
+original_client = malclient.Client
+
+class PatchedClient(original_client):
+    def __init__(self, *args, **kwargs):
+        # If the code initializes Client() with no parameters, inject credentials
+        if not args and not kwargs:
+            kwargs['client_id'] = os.environ.get("MAL_CLIENT_ID", "dummy_id_to_bypass_init_check")
+        super().__init__(*args, **kwargs)
+
+malclient.Client = PatchedClient
 
 import datetime
 import importlib
