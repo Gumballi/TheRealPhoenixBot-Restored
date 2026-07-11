@@ -14,10 +14,13 @@ original_client = malclient.Client
 
 class PatchedClient(original_client):
     def __init__(self, *args, **kwargs):
-        # If the code initializes Client() with no parameters, inject credentials
         if not args and not kwargs:
             kwargs['client_id'] = os.environ.get("MAL_CLIENT_ID", "dummy_id_to_bypass_init_check")
         super().__init__(*args, **kwargs)
+
+    def init(self, *args, **kwargs):
+        # Eat the .init() call from legacy codebase so it doesn't crash
+        pass
 
 malclient.Client = PatchedClient
 
