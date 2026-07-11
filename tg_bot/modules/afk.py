@@ -1,5 +1,6 @@
 from typing import Optional
 
+import telegram.error  # Imported to handle Telegram API BadRequests cleanly
 from telegram import Message, Update, Bot, User
 from telegram import MessageEntity
 from telegram.ext import Filters, MessageHandler, run_async
@@ -56,12 +57,21 @@ def reply_afk(bot: Bot, update: Update):
                 fst_name = ent.user.first_name
 
             elif ent.type == MessageEntity.MENTION:
-                user_id = get_user_id(message.text[ent.offset:ent.offset + ent.length])
+                mention_text = message.text[ent.offset:ent.offset + ent.length]
+                user_id = get_user_id(mention_text)
                 if not user_id:
                     # Should never happen, since for a user to become AFK they must have spoken. Maybe changed username?
                     return
-                chat = bot.get_chat(user_id)
-                fst_name = chat.first_name
+                
+                try:
+                    chat = bot.get_chat(user_id)
+                    fst_name = chat.first_name
+                except telegram.error.BadRequest as e:
+                    if "Chat not found" in str(e):
+                        # Use the text mention representation if the private chat profile link is broken
+                        fst_name = mention_text
+                    else:
+                        raise e
 
             else:
                 return
@@ -93,7 +103,7 @@ AFK_HANDLER = DisableAbleCommandHandler("afk", afk)
 AFK_REGEX_HANDLER = DisableAbleRegexHandler("(?i)brb", afk, friendly="afk")
 NO_AFK_HANDLER = MessageHandler(Filters.all & Filters.group, no_longer_afk)
 AFK_REPLY_HANDLER = MessageHandler(Filters.entity(MessageEntity.MENTION) | Filters.entity(MessageEntity.TEXT_MENTION),
-                                   reply_afk)
+                                    reply_afk)
 
 dispatcher.add_handler(AFK_HANDLER, AFK_GROUP)
 dispatcher.add_handler(AFK_REGEX_HANDLER, AFK_GROUP)
