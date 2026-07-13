@@ -1,26 +1,31 @@
 import uuid
+import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackContext, CallbackQueryHandler, CommandHandler
+from telegram.ext import CallbackContext, CallbackQueryHandler, MessageHandler, Filters
 from telegram.ext.dispatcher import run_async
 
-from tg_bot import dispatcher
+from tg_bot import dispatcher, LOGGER
 from tg_bot.modules.users import get_user_id
 
 # Internal storage for active anonymous secrets
 ANON_SECRET_DB = {}
 
 @run_async
-def send_anonymous_secret(update: Update, context: CallbackContext):
+def anonymous_secret_trigger(update: Update, context: CallbackContext):
     message = update.effective_message
-    chat = update.effective_chat
-    args = context.args
-
-    if len(args) < 2:
-        message.reply_text("Usage: `/anonsecret <username> <your hidden text>`")
+    if not message or not message.text:
         return
 
-    target_username = args[0]
-    secret_text = " ".join(args[1:])
+    # Pattern: @BotUsername @TargetUsername Secret Message
+    bot_username = context.bot.username
+    pattern = rf"^@{re.escape(bot_username)}\s+(@\w+)\s+(.+)"
+    match = re.match(pattern, message.text, re.IGNORECASE | re.DOTALL)
+    
+    if not match:
+        return
+
+    target_username = match.group(1)
+    secret_text = match.group(2)
     sender_user = message.from_user
 
     # Extract user ID from username using the repo's internal function
@@ -45,14 +50,7 @@ def send_anonymous_secret(update: Update, context: CallbackContext):
     }
 
     # Build the interaction layout button
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                text="Reveal Anonymous Secret", 
-                callback_data=f"anonsecret_{secret_id}"
-            )
-        ]
-    ]
+    keyboard = [[InlineKeyboardButton(text="Reveal Anonymous Secret", callback_data=f"anonsecret_{secret_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # Inform the chat an anonymous secret message is waiting
@@ -62,13 +60,12 @@ def send_anonymous_secret(update: Update, context: CallbackContext):
         f"_Only the designated recipient can open this text frame._"
     )
     
-    chat.send_message(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+    message.chat.send_message(text=text, reply_markup=reply_markup, parse_mode="Markdown")
     
     # Delete the triggering command so the raw text vanishes from the chat log
     try:
         message.delete()
     except Exception:
-        # Fails silently if the bot isn't granted group admin deletion rights
         pass
 
 
@@ -76,8 +73,6 @@ def send_anonymous_secret(update: Update, context: CallbackContext):
 def read_anonymous_secret(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = query.from_user.id
-    
-    # Extract the unique ID from callback_data
     secret_id = query.data.split("_")[1]
 
     if secret_id not in ANON_SECRET_DB:
@@ -86,24 +81,22 @@ def read_anonymous_secret(update: Update, context: CallbackContext):
 
     secret_data = ANON_SECRET_DB[secret_id]
 
-    # Strict ID check validation
     if user_id != secret_data["target_id"]:
         query.answer(text="Access Denied! This anonymous secret envelope belongs to someone else.", show_alert=True)
         return
 
-    # Deliver the secret safely via an inline alert box pop-up
     query.answer(text=f"Decrypted Anonymous Message:\n\n{secret_data['text']}", show_alert=True)
 
 
-# Wire the actions into your bot's dispatcher instance
-dispatcher.add_handler(CommandHandler("anonsecret", send_anonymous_secret))
+# Register handlers
+dispatcher.add_handler(MessageHandler(Filters.text & Filters.chat_type.groups, anonymous_secret_trigger))
 dispatcher.add_handler(CallbackQueryHandler(read_anonymous_secret, pattern=r"^anonsecret_"))
 
 __mod_name__ = "Anonymous Secrets"
 __help__ = """
-Send anonymous secret messages to users in a group.
+Send anonymous secret messages to users in a group using a mention trigger.
 
 Usage:
-`/anonsecret <username> <your hidden text>`: Send an anonymous secret message to a user by username.
-"""
+`@{bot_username} @username <your hidden text>`: Send an anonymous secret message to a user by username.
+""".format(bot_username=dispatcher.bot.username)
 
