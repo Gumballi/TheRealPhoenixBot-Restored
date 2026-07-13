@@ -25,6 +25,8 @@ def __list_all_modules():
 
     return all_modules
 
-ALL_MODULES = sorted(__list_all_modules() + ['secret'])
+# We remove the manual + ['secret'] addition here since 'secret.py' 
+# is already picked up dynamically by __list_all_modules()
+ALL_MODULES = sorted(__list_all_modules())
 LOGGER.info("Modules to load: %s", str(ALL_MODULES))
 __all__ = ALL_MODULES + ["ALL_MODULES"]
