@@ -2,6 +2,7 @@ import uuid
 import re
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler, MessageHandler, Filters
+from telegram.ext.dispatcher import run_async
 
 from tg_bot import dispatcher, LOGGER
 from tg_bot.modules.users import get_user_id
@@ -9,6 +10,7 @@ from tg_bot.modules.users import get_user_id
 # Internal storage for active anonymous secrets
 ANON_SECRET_DB = {}
 
+@run_async
 def anonymous_secret_trigger(bot, update):
     message = update.effective_message
     if not message or not message.text:
@@ -74,6 +76,7 @@ def anonymous_secret_trigger(bot, update):
         pass
 
 
+@run_async
 def read_anonymous_secret(bot, update):
     query = update.callback_query
     user_id = query.from_user.id
@@ -94,19 +97,17 @@ def read_anonymous_secret(bot, update):
     query.answer(text="Decrypted Anonymous Message:\n\n{}".format(secret_data['text']), show_alert=True)
 
 
-# Register handlers using v11's built-in run_async parameter
+# Register handlers without run_async in the constructor (handled by the @run_async decorator above)
 dispatcher.add_handler(
     MessageHandler(
         Filters.text & Filters.group, 
-        anonymous_secret_trigger, 
-        run_async=True
+        anonymous_secret_trigger
     )
 )
 dispatcher.add_handler(
     CallbackQueryHandler(
         read_anonymous_secret, 
-        pattern=r"^anonsecret_", 
-        run_async=True
+        pattern=r"^anonsecret_"
     )
 )
 
