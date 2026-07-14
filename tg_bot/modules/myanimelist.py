@@ -7,23 +7,51 @@ from telegram.ext import run_async
 from tg_bot import OWNER_ID, MAL_CLIENT_ID, MAL_ACCESS_TOKEN, MAL_REFRESH_TOKEN, dispatcher
 from tg_bot.modules.disable import DisableAbleCommandHandler
 
+# Import SQL database session and a helper model (we will create this helper next!)
+from tg_bot.modules.sql import mal_sql as sql
 
 client = Client()
-client.init(access_token=MAL_ACCESS_TOKEN)
+
+# Load tokens from database if they exist; otherwise, use env variables
+db_tokens = sql.get_tokens()
+if db_tokens:
+    CURRENT_ACCESS_TOKEN = db_tokens.access_token
+    CURRENT_REFRESH_TOKEN = db_tokens.refresh_token
+else:
+    CURRENT_ACCESS_TOKEN = MAL_ACCESS_TOKEN
+    CURRENT_REFRESH_TOKEN = MAL_REFRESH_TOKEN
+    # Initialize DB with env variables
+    sql.update_tokens(CURRENT_ACCESS_TOKEN, CURRENT_REFRESH_TOKEN)
+
+client.init(access_token=CURRENT_ACCESS_TOKEN)
 
 
 def refresh_token(msg: Message, error: APIException) -> None:
     if str(error.response) == "<Response [401]>":
-        client.refresh_bearer_token(
-            client_id=MAL_CLIENT_ID,
-            refresh_token=MAL_REFRESH_TOKEN,
-            client_secret=None
-        )
-        new_access_token = client.bearer_token
-        new_refresh_token = client.refresh_token
-        MSG_TEXT = (f"Your MAL access token has expired.\n*New Access Token*: `{new_access_token}`\n"
-            f"*New Refresh Token*: `{new_refresh_token}`")
-        dispatcher.bot.send_message(OWNER_ID, MSG_TEXT, parse_mode="MARKDOWN")
+        # Get latest refresh token from DB
+        latest_tokens = sql.get_tokens()
+        r_token = latest_tokens.refresh_token if latest_tokens else MAL_REFRESH_TOKEN
+        
+        try:
+            client.refresh_bearer_token(
+                client_id=MAL_CLIENT_ID,
+                refresh_token=r_token,
+                client_secret=None
+            )
+            new_access_token = client.bearer_token
+            new_refresh_token = client.refresh_token
+            
+            # Save new tokens directly to the SQL Database!
+            sql.update_tokens(new_access_token, new_refresh_token)
+            
+            MSG_TEXT = (f"🔄 *MAL tokens refreshed and saved to Database!*\n\n"
+                        f"*New Access Token*: `{new_access_token[:15]}...`\n"
+                        f"*New Refresh Token*: `{new_refresh_token[:15]}...`")
+            dispatcher.bot.send_message(OWNER_ID, MSG_TEXT, parse_mode="MARKDOWN")
+            
+            msg.reply_text("Tokens refreshed successfully! Please try your search again.")
+        except Exception as refresh_error:
+            msg.reply_text(f"Failed to refresh MAL token: `{refresh_error}`", parse_mode="MARKDOWN")
     else:
         msg.reply_text(f"An error occurred:\n`{error}`", parse_mode="MARKDOWN")
 
@@ -39,6 +67,7 @@ def search_anime(bot: Bot, update: Update, args: List[str]) -> None:
         anime = client.search_anime(query)
     except APIException as e:
         refresh_token(msg, e)
+        return
     if not anime:
         msg.reply_text("Not found!")
         return
@@ -94,6 +123,7 @@ def search_manga(bot: Bot, update: Update, args: List[str]) -> None:
         manga = client.search_manga(query)
     except APIException as e:
         refresh_token(msg, e)
+        return
     if not manga:
         msg.reply_text("Not found!")
         return
@@ -131,9 +161,7 @@ Get information about anime and manga with the help of this module! All data is 
  - /manga <manga>: returns information about the manga.
  """
 
-
 __mod_name__ = "MyAnimeList"
-
 
 ANIME_HANDLER = DisableAbleCommandHandler("anime", search_anime, pass_args=True)
 MANGA_HANDLER = DisableAbleCommandHandler("manga", search_manga, pass_args=True)
