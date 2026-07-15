@@ -40,6 +40,8 @@ from telegram import ParseMode, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.error import Unauthorized, BadRequest, TimedOut, NetworkError, ChatMigrated, TelegramError
 from telegram.ext import CommandHandler, Filters, MessageHandler, CallbackQueryHandler
 from telegram.ext.dispatcher import run_async, DispatcherHandlerStop, Dispatcher
+# Added escape_markdown to avoid NameError crashes down the line
+from telegram.utils.helpers import escape_markdown 
 
 # We patch the Dispatcher class *before* importing tg_bot and initializing the dispatcher instance!
 CHATS_CNT = {}
@@ -492,9 +494,16 @@ def migrate_chats(bot: Bot, update: Update):
 
 def run_dummy_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    LOGGER.info(f"Dummy background server listening on port {port}")
-    server.serve_forever()
+    try:
+        server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+        LOGGER.info(f"Dummy background server listening on port {port}")
+        server.serve_forever()
+    except OSError as e:
+        # 98 corresponds to EADDRINUSE (Address already in use)
+        if e.errno == 98:
+            LOGGER.warning(f"Port {port} is already in use by a parallel deployment worker. Skipping dummy server thread initialization.")
+        else:
+            raise e
 
 
 def main():
