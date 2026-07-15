@@ -1,9 +1,10 @@
 # Modular Gemini AI Chatbot Module for TheRealPhoenixBot
-# Created to answer when tagged or explicitly commanded
+# Built using the modern, non-deprecated google-genai SDK
 
 import os
 import logging
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from telegram import Bot, Update, ParseMode
 from telegram.ext import MessageHandler, Filters, run_async
 from tg_bot import dispatcher
@@ -11,30 +12,37 @@ from tg_bot.modules.disable import DisableAbleCommandHandler
 
 LOGGER = logging.getLogger(__name__)
 
-# Configure the Gemini API client safely
-API_KEY = os.environ.get("AI_API_KEY")
+# Initialize client using the modern SDK structure
+API_KEY = os.environ.get("AI_API_KEY") or os.environ.get("GEMINI_API_KEY")
 if API_KEY:
-    genai.configure(api_key=API_KEY)
-    # Using gemini-1.5-flash as it is free, fast, and highly capable
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    # Under google-genai, we initialize a client instance
+    client = genai.Client(api_key=API_KEY)
+    # Using the standard flash model identifier
+    MODEL_NAME = 'gemini-1.5-flash'
 else:
-    LOGGER.warning("GEMINI_API_KEY is not set. Gemini module will be disabled.")
-    model = None
+    LOGGER.warning("AI_API_KEY / GEMINI_API_KEY is not set. Gemini module will be disabled.")
+    client = None
 
 
 def generate_ai_response(prompt: str) -> str:
-    """Helper function to call Gemini API and handle exceptions safely."""
-    if not model:
+    """Helper function to call Gemini API using the modern SDK structure."""
+    if not client:
         return "I'm sorry, but my AI core is currently offline (API key missing)."
     
     try:
-        # Add a light system instruction so it acts like a friendly bot
-        full_prompt = (
-            "You are Phoenix, a helpful, authentic, and witty AI companion bot in a Telegram chat. "
-            "Respond concisely, keep formatting clean (use basic markdown safely), and match the conversational tone of the user. "
-            f"User Prompt: {prompt}"
+        # Define modern system instructions
+        config = types.GenerateContentConfig(
+            system_instruction=(
+                "You are Phoenix, a helpful, authentic, and witty AI companion bot in a Telegram chat. "
+                "Respond concisely, keep formatting clean (use basic markdown safely), and match the conversational tone of the user."
+            )
         )
-        response = model.generate_content(full_prompt)
+        # Call API
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=config,
+        )
         return response.text.strip()
     except Exception as e:
         LOGGER.error(f"[gemini] Gemini API execution failed: {e}")
