@@ -39,7 +39,15 @@ else:
 # ---------------------------------------------------------------------------
 # Mistral setup
 # ---------------------------------------------------------------------------
-MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+try:
+    from tg_bot import MISTRAL_API_KEY
+except ImportError:
+    MISTRAL_API_KEY = None
+
+# If the imported key is missing, check the direct environment variables
+if not MISTRAL_API_KEY:
+    MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
+
 MISTRAL_MODEL = "mistral-large-latest"  # alias always points at the current flagship
 mistral_client = None
 
