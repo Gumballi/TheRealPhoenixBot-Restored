@@ -44,16 +44,20 @@ try:
 except ImportError:
     MISTRAL_API_KEY = None
 
-# If the imported key is missing, check the direct environment variables
 if not MISTRAL_API_KEY:
     MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY")
 
-MISTRAL_MODEL = "mistral-large-latest"  # alias always points at the current flagship
+MISTRAL_MODEL = "mistral-large-latest"
 mistral_client = None
 
 if MISTRAL_API_KEY:
     try:
-        from mistralai import Mistral
+        # Use a shim to handle both mistralai v1 and v2 SDKs cleanly
+        try:
+            from mistralai.client import Mistral
+        except ImportError:
+            from mistralai import Mistral
+
         mistral_client = Mistral(api_key=MISTRAL_API_KEY)
     except Exception as e:
         LOGGER.error(f"[ai] Failed to initialize Mistral client: {e}")
