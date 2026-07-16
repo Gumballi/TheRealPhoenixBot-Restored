@@ -21,3 +21,4 @@ loguru
 malclient-upgraded
 google-genai>=0.1.1
 mistralai>=1.0.0
+lxml
