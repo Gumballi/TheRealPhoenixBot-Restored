@@ -8,7 +8,10 @@ class Config(SampleConfig):
     OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
     OWNER_USERNAME = os.environ.get("OWNER_USERNAME", "PLACEHOLDER_USER")
 
-# MyAnimeList Configuration
+    # Add Mistral key fallback
+    MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", None)
+    
+    # MyAnimeList Configuration
     MAL_CLIENT_ID = os.environ.get("MAL_CLIENT_ID", "")
     MAL_ACCESS_TOKEN = os.environ.get("MAL_ACCESS_TOKEN", "")
     MAL_REFRESH_TOKEN = os.environ.get("MAL_REFRESH_TOKEN", "")
