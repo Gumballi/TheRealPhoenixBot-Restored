@@ -36,7 +36,7 @@ def search_simkl(bot: Bot, update: Update, args: list, media_type: str):
     
     try:
         # Simkl's v1 search endpoint
-        url = f"https://api.simkl.org/search/{media_type}?q={urllib.parse.quote(query)}&client_id={SIMKL_CLIENT_ID}"
+        url = f"https://api.simkl.com/search/{media_type}?q={urllib.parse.quote(query)}&client_id={SIMKL_CLIENT_ID}"
         req = urllib.request.Request(url, headers={'User-Agent': 'TheRealPhoenixBot/1.0'})
         
         # Bypass SSL Verification issues just like we did in extras.py
