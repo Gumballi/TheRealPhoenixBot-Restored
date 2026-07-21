@@ -173,21 +173,51 @@ def ask_ai(bot: Bot, update: Update, args):
 
 @run_async
 def mention_chatbot(bot: Bot, update: Update):
-    """Handles auto-replying when the bot is tagged (@TheRealPhoenixBot) in groups or PM'd directly."""
+    """Handles auto-replying when the bot is tagged (@TheRealPhoenixBot) in groups,
+    PM'd directly, or when a user replies to any of the bot's messages to continue the conversation."""
     msg = update.effective_message
-    LOGGER.info(f"[ai] mention_chatbot triggered by {msg.from_user.id} in chat {msg.chat_id}")
+    if not msg or not msg.text:
+        return
+
+    is_pm = update.effective_chat.type == "private"
+    bot_username = f"@{bot.username}" if bot.username else ""
+
+    is_mentioned = bool(
+        bot_username and bot_username.lower() in msg.text.lower()
+    )
+
+    is_reply_to_bot = bool(
+        msg.reply_to_message
+        and msg.reply_to_message.from_user
+        and msg.reply_to_message.from_user.id == bot.id
+    )
+
+    # In groups/supergroups, only respond if PM, bot is mentioned, or replying to the bot
+    if not (is_pm or is_mentioned or is_reply_to_bot):
+        return
+
+    LOGGER.info(
+        f"[ai] mention_chatbot triggered by {msg.from_user.id} in chat {msg.chat_id} "
+        f"(PM: {is_pm}, Mention: {is_mentioned}, ReplyToBot: {is_reply_to_bot})"
+    )
 
     query = msg.text
-    bot_username = f"@{bot.username}"
-
-    if bot_username in query:
-        query = query.replace(bot_username, "").strip()
+    if bot_username and bot_username.lower() in query.lower():
+        import re
+        query = re.sub(re.escape(bot_username), "", query, flags=re.IGNORECASE).strip()
 
     if not query:
         return
 
+    # If replying to the bot, include previous message context to continue the chat seamlessly
+    if is_reply_to_bot and msg.reply_to_message and msg.reply_to_message.text:
+        previous_text = msg.reply_to_message.text.strip()
+        prompt = f"Previous message: {previous_text}\n\nUser reply: {query}"
+    else:
+        prompt = query
+
     bot.send_chat_action(chat_id=msg.chat_id, action="typing")
-    response = generate_ai_response(query)
+    response = generate_ai_response(prompt)
     msg.reply_text(response)
 
 
@@ -210,12 +240,10 @@ def ai_status(bot: Bot, update: Update):
 ASK_HANDLER = DisableAbleCommandHandler(["ask", "ai"], ask_ai, pass_args=True)
 dispatcher.add_handler(ASK_HANDLER)
 
-# 2. Mention handler: triggers when the bot's username is tagged, or when direct messaged in PM.
-# Registered in its own group (10) so other broad text-handling modules in group 0 can't
-# swallow the update first. Commands are excluded from the private-chat branch so /start
-# etc. in DM don't get routed here instead of their real handlers.
+# 2. Mention & Reply handler: triggers when the bot's username is tagged,
+# when direct messaged in PM, or when a user replies directly to the bot's message to continue the chat.
 MENTION_HANDLER = MessageHandler(
-    Filters.text & (Filters.entity("mention") | Filters.private) & (~Filters.command),
+    Filters.text & (Filters.entity("mention") | Filters.entity("text_mention") | Filters.private | Filters.reply) & (~Filters.command),
     mention_chatbot,
 )
 dispatcher.add_handler(MENTION_HANDLER, group=10)
