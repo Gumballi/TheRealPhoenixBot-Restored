@@ -50,7 +50,7 @@ def search_simkl(bot: Bot, update: Update, args: list, media_type: str):
             return
             
         # Get the ID of the top result
-        simkl_id = data[0].get('ids', {}).get('simkl')
+        simkl_id = data[0].get('ids', {}).get('simkl_id')
         
         if not simkl_id:
             msg.reply_text(f"Found something, but couldn't retrieve its Simkl ID.")
