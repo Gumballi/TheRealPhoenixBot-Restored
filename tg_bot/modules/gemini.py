@@ -1,10 +1,12 @@
 # Modular AI Chatbot module for TheRealPhoenixBot
 # Automatically retries transient errors (503/429/overload) and fails over from
 # Gemini to Mistral so a single provider's outage doesn't take /ask down entirely.
+# Upgraded with YouTube Transcript extraction capabilities.
 
 import os
 import time
 import logging
+import re
 
 from telegram import Bot, Update, ParseMode
 from telegram.ext import CommandHandler, MessageHandler, Filters, run_async
@@ -64,8 +66,7 @@ if MISTRAL_API_KEY:
 else:
     LOGGER.warning("[ai] MISTRAL_API_KEY not set - Mistral fallback disabled.")
 
-# Order providers are tried in. Override via env if you want Mistral tried first, e.g.
-# AI_PROVIDER_ORDER="mistral,gemini"
+# Order providers are tried in. Override via env if you want Mistral tried first
 PROVIDER_ORDER = [
     p.strip().lower()
     for p in os.environ.get("AI_PROVIDER_ORDER", "gemini,mistral").split(",")
@@ -74,16 +75,15 @@ PROVIDER_ORDER = [
 
 MAX_RETRIES_PER_PROVIDER = 2
 BACKOFF_BASE_SECONDS = 1.5
-
-# Substrings that indicate a *transient* error worth retrying/failing over on,
-# as opposed to a bad request, bad key, etc. which retrying won't fix.
 TRANSIENT_MARKERS = ("503", "UNAVAILABLE", "429", "rate limit", "overloaded", "high demand", "timeout")
 
+# ---------------------------------------------------------------------------
+# Core AI Functions
+# ---------------------------------------------------------------------------
 
 def _is_transient(err: Exception) -> bool:
     text = str(err).lower()
     return any(marker.lower() in text for marker in TRANSIENT_MARKERS)
-
 
 def _call_gemini(prompt: str) -> str:
     config = genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
@@ -93,7 +93,6 @@ def _call_gemini(prompt: str) -> str:
         config=config,
     )
     return response.text.strip()
-
 
 def _call_mistral(prompt: str) -> str:
     response = mistral_client.chat.complete(
@@ -105,18 +104,12 @@ def _call_mistral(prompt: str) -> str:
     )
     return response.choices[0].message.content.strip()
 
-
-# name -> (is_available_fn, call_fn)
 PROVIDERS = {
     "gemini": (lambda: gemini_client is not None, _call_gemini),
     "mistral": (lambda: mistral_client is not None, _call_mistral),
 }
 
-
 def generate_ai_response(prompt: str) -> str:
-    """Tries each configured provider in PROVIDER_ORDER, retrying transient errors
-    with backoff before failing over to the next provider. Returns a friendly
-    message only if every provider is unavailable or fails."""
     last_error = None
     tried_any = False
 
@@ -139,7 +132,7 @@ def generate_ai_response(prompt: str) -> str:
                 transient = _is_transient(e)
                 LOGGER.warning(
                     f"[ai] {provider_name} attempt {attempt}/{MAX_RETRIES_PER_PROVIDER} failed "
-                    f"({'transient, will retry/failover' if transient else 'non-transient, giving up on this provider'}): {e}"
+                    f"({'transient, will retry' if transient else 'non-transient, giving up on this provider'}): {e}"
                 )
                 if not transient:
                     break
@@ -155,10 +148,49 @@ def generate_ai_response(prompt: str) -> str:
     LOGGER.error(f"[ai] All configured providers failed. Last error: {last_error}")
     return "Sorry, I had a brief neural misfire. Could you try asking that again?"
 
+# ---------------------------------------------------------------------------
+# YouTube Transcript Integration
+# ---------------------------------------------------------------------------
+
+def _get_youtube_transcript(video_id: str) -> str:
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        # Stitch all subtitle blocks together
+        text = " ".join([t['text'] for t in transcript_list])
+        # Truncate at ~15,000 characters to prevent overloading token limits on massive videos
+        if len(text) > 15000:
+            text = text[:15000] + "... [Transcript truncated due to length]"
+        return text
+    except ImportError:
+        LOGGER.error("[ai] youtube-transcript-api is not installed!")
+        return None
+    except Exception as e:
+        LOGGER.warning(f"[ai] Could not fetch transcript for {video_id}: {e}")
+        return None
+
+def enhance_prompt_with_youtube(prompt: str) -> str:
+    """Scans the prompt for a YouTube link, fetches the transcript, and silently injects it for the AI."""
+    yt_pattern = r'(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/(?:[^\/\n\s]+\/\S+\/|(?:v|e(?:mbed)?)\/|\S*?[?&]v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})'
+    match = re.search(yt_pattern, prompt)
+    
+    if match:
+        video_id = match.group(1)
+        transcript = _get_youtube_transcript(video_id)
+        
+        if transcript:
+            return prompt + f"\n\n[System Note: A YouTube video was linked. Here is the hidden video transcript for you to analyze and answer the user's question:\n{transcript}]"
+        else:
+            return prompt + f"\n\n[System Note: A YouTube video was linked, but closed captions are disabled or unavailable. Inform the user you cannot 'watch' it without a transcript.]"
+            
+    return prompt
+
+# ---------------------------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------------------------
 
 @run_async
 def ask_ai(bot: Bot, update: Update, args):
-    """Handles explicit command inquiries, e.g., /ask tell me a joke"""
     msg = update.effective_message
     query = " ".join(args)
 
@@ -166,22 +198,20 @@ def ask_ai(bot: Bot, update: Update, args):
         msg.reply_text("Please provide a question! Example: `/ask why is the sky blue?`", parse_mode=ParseMode.MARKDOWN)
         return
 
-    # Extract context if replying to a text message OR a photo with a caption (like Simkl cards)
     prompt = query
     if msg.reply_to_message:
         context_text = msg.reply_to_message.caption or msg.reply_to_message.text
         if context_text:
             prompt = f"Previous message context:\n{context_text.strip()}\n\nUser question: {query}"
 
+    prompt = enhance_prompt_with_youtube(prompt)
+
     bot.send_chat_action(chat_id=msg.chat_id, action="typing")
     response = generate_ai_response(prompt)
     msg.reply_text(response)
 
-
 @run_async
 def mention_chatbot(bot: Bot, update: Update):
-    """Handles auto-replying when the bot is tagged (@TheRealPhoenixBot) in groups,
-    PM'd directly, or when a user replies directly to the bot's message to continue the chat."""
     msg = update.effective_message
     if not msg or not msg.text:
         return
@@ -199,7 +229,6 @@ def mention_chatbot(bot: Bot, update: Update):
         and msg.reply_to_message.from_user.id == bot.id
     )
 
-    # In groups/supergroups, only respond if PM, bot is mentioned, or replying to the bot
     if not (is_pm or is_mentioned or is_reply_to_bot):
         return
 
@@ -210,13 +239,11 @@ def mention_chatbot(bot: Bot, update: Update):
 
     query = msg.text
     if bot_username and bot_username.lower() in query.lower():
-        import re
         query = re.sub(re.escape(bot_username), "", query, flags=re.IGNORECASE).strip()
 
     if not query:
         return
 
-    # Check for both .caption and .text when grabbing context from the replied message
     if is_reply_to_bot and msg.reply_to_message:
         previous_text = msg.reply_to_message.caption or msg.reply_to_message.text
         if previous_text:
@@ -226,14 +253,14 @@ def mention_chatbot(bot: Bot, update: Update):
     else:
         prompt = query
 
+    prompt = enhance_prompt_with_youtube(prompt)
+
     bot.send_chat_action(chat_id=msg.chat_id, action="typing")
     response = generate_ai_response(prompt)
     msg.reply_text(response)
 
-
 @run_async
 def ai_status(bot: Bot, update: Update):
-    """Quick diagnostic: which providers are configured and in what order they're tried."""
     lines = ["*AI provider status:*"]
     for name in PROVIDER_ORDER:
         provider = PROVIDERS.get(name)
@@ -246,23 +273,18 @@ def ai_status(bot: Bot, update: Update):
     update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
-# 1. Command handler: triggers on `/ask [question]` or `/ai [question]`
 ASK_HANDLER = DisableAbleCommandHandler(["ask", "ai"], ask_ai, pass_args=True)
 dispatcher.add_handler(ASK_HANDLER)
 
-# 2. Mention & Reply handler: triggers when the bot's username is tagged,
-# when direct messaged in PM, or when a user replies directly to the bot's message to continue the chat.
 MENTION_HANDLER = MessageHandler(
     Filters.text & (Filters.entity("mention") | Filters.entity("text_mention") | Filters.private | Filters.reply) & (~Filters.command),
     mention_chatbot,
 )
 dispatcher.add_handler(MENTION_HANDLER, group=10)
 
-# 3. Diagnostic command
 AI_STATUS_HANDLER = CommandHandler("aistatus", ai_status)
 dispatcher.add_handler(AI_STATUS_HANDLER)
 
-# Module details for the main system
 __help__ = """
 Let's make the bot conversational! You can interact with the built-in AI model.
 
@@ -274,8 +296,11 @@ Let's make the bot conversational! You can interact with the built-in AI model.
 *Alternative:*
 - Simply tag the bot (`@bot_username`) in a group message, or message it in private, and it will automatically answer you using AI!
 
+*YouTube Support:*
+If you send a YouTube link to the AI, it will attempt to extract the closed captions and answer questions about the video!
+
 *Reliability:*
-This module automatically retries and fails over between providers (currently Gemini and Mistral, in that order) if one is temporarily overloaded, so a single provider outage won't take the bot's AI features down.
+This module automatically retries and fails over between providers (currently Gemini and Mistral, in that order) if one is temporarily overloaded.
 """
 
 __mod_name__ = "AI Chatbot"
