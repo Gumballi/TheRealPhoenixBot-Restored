@@ -155,13 +155,31 @@ def generate_ai_response(prompt: str) -> str:
 def _get_youtube_transcript(video_id: str) -> str:
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        
+        # Initialize the API client (required for the latest versions of the library)
+        yt_api = YouTubeTranscriptApi()
+        
+        # Retrieve the list of all available transcripts for the video
+        transcript_list = yt_api.list(video_id)
+        
+        # Iterate and grab the first available transcript (bypasses strict language constraints)
+        transcript_data = None
+        for transcript in transcript_list:
+            transcript_data = transcript.fetch()
+            break  # Stop after successfully grabbing the first one
+            
+        if not transcript_data:
+            return None
+            
         # Stitch all subtitle blocks together
-        text = " ".join([t['text'] for t in transcript_list])
+        text = " ".join([block['text'] for block in transcript_data])
+        
         # Truncate at ~15,000 characters to prevent overloading token limits on massive videos
         if len(text) > 15000:
             text = text[:15000] + "... [Transcript truncated due to length]"
+            
         return text
+        
     except ImportError:
         LOGGER.error("[ai] youtube-transcript-api is not installed!")
         return None
